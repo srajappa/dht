@@ -2,6 +2,10 @@ package edu.buffalo.cse.cse486586.simpledht;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
@@ -19,10 +23,15 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Formatter;
 import java.util.List;
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
 import android.content.ContentProvider;
 import android.content.ContentValues;
+import android.content.Context;
 import android.database.Cursor;
+import android.database.MatrixCursor;
 import android.net.Uri;
 import android.os.AsyncTask;
 import android.telephony.TelephonyManager;
@@ -34,19 +43,22 @@ public class SimpleDhtProvider extends ContentProvider {
     final String JOIN_RQST = "JOIN";
     final String OK_JOIN = "OK";
     final String CNTR_NODE = "11108";
-    final String UPDATE = "UPDATE";
+    final String UPDATE_PRE = "PRE";
+    final String UPDATE_SUC = "SUC";
     final String FORWARD = "FORWARD";
-    final String UPDATE_PRE = "UPDATEPRE";
-    final String UPDATE_SUC = "UPDATESUC";
+    final String SENDALL = "SENDALL";
+    final String QUERY = "QUERY";
+    final String RESPONSE = "RESPONSE";
+    final String PHANTOM = "PHANTOM";
 
     final int MASTER_MODE  = 666;
 
 
-    final int REMOTE_PORT0 = 5554;
-    final int REMOTE_PORT1 = 5556;
-    final int REMOTE_PORT2 = 5558;
-    final int REMOTE_PORT3 = 5560;
-    final int REMOTE_PORT4 = 5562;
+    final String REMOTE_PORT0 = "11108";
+    final String REMOTE_PORT1 = "11112";
+    final String REMOTE_PORT2 = "11116";
+    final String REMOTE_PORT3 = "11120";
+    final String REMOTE_PORT4 = "11124";
 
     final int JOIN_NUM = 1;
     final int OK_JOIN_PRED = 2;
@@ -55,12 +67,32 @@ public class SimpleDhtProvider extends ContentProvider {
 
     final int OWN_ZONE = 0;
     final int OTHER_ZONE = 1;
-    final int
 
-    List<NodeHashList> listOfHash = new ArrayList<NodeHashList>();
+    final int FORWARD_FILE = 0;
+    final int FORWARD_VAL = 1;
+
+    final int SINGLE_ONLY = 1;
+    final int ALL_ONLY = 2;
+
+    final int KEY_MODE = 1;
+    final int VAL_MODE = 2;
+
+    final int QUERY_PORT = 1;
+    final int QUERY_KEY = 2;
+    static String stringMaster;
+
+    static boolean GOT_IT = false;
+    static int jack = 0;
+    //Using Locks
+    //References- http://examples.javacodegeeks.com/core-java/util/concurrent/locks-concurrent/condition/java-util-concurrent-locks-condition-example/
+    //End
+    //private final Lock lock = new ReentrantLock();
+    //private final Condition gotIt = lock.newCondition();
+
+    static List<NodeHashList> listOfHash = new ArrayList<NodeHashList>();
 
     final int SERVER_PORT = 10000;
-    static NodeInfo myNode = null;
+    static NodeInfo myNode = new NodeInfo();
     @Override
     public int delete(Uri uri, String selection, String[] selectionArgs) {
         // TODO Auto-generated method stub
@@ -76,25 +108,89 @@ public class SimpleDhtProvider extends ContentProvider {
     @Override
     public Uri insert(Uri uri, ContentValues values) {
         // TODO Auto-generated method stub
+        Log.v("INSERT: ","BEGIN");
         String keyFile = values.getAsString("key");
         String contentFile = values.getAsString("value");
 
+        Log.v("INSERT: what",keyFile+"!"+contentFile);
         //Perform the checks and validations
 
-        int decision  = insertWorthy(keyFile);
-        switch (decision){
-            case OWN_ZONE:
-        }
+        int decision  = 99;
+        try {
 
+
+
+            decision = insertWorthy(keyFile);
+            switch (decision){
+                case OWN_ZONE:   createContent(keyFile,contentFile);
+                    break;
+                case OTHER_ZONE: forwardToSucc(keyFile,contentFile);
+                    break;
+                default: Log.e("Insert","Unable to fine zone");
+            }
+
+        } catch (NoSuchAlgorithmException e) {
+            e.printStackTrace();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
         //Insert the entries into the file named "KEYFILE"
 
+        Log.v("INSERT: ","END");
         return null;
+    }
+
+    private void forwardToSucc(String keyFile, String contentFile) {
+        Log.v("ForwardToSucc",keyFile+"!"+contentFile);
+        String msg = FORWARD+"~"+keyFile+"!"+contentFile;
+        sendToOtherSide(myNode.succPort,msg);
+    }
+
+    private void createContent(String keyFile, String contentFile) throws IOException {
+        FileOutputStream fpOutput = getContext().openFileOutput(keyFile, Context.MODE_PRIVATE);
+        byte[] bitVal = contentFile.getBytes();
+        fpOutput.write(bitVal);
+        fpOutput.close();
+        fpOutput.flush();
     }
 
     private int insertWorthy(String keyFile) throws NoSuchAlgorithmException {
         String hashKeyFile = genHash(keyFile);
 
-        if()
+        if(myNode.predCode == null && myNode.succCode == null){
+            Log.i("SIGLENODE",keyFile+"-+-"+hashKeyFile);
+            return OWN_ZONE;
+        }
+        String predCode = genHash(getRightID(myNode.predPort));
+        String succCode = genHash(getRightID(myNode.succPort));
+
+        if(predCode.compareTo(myNode.myid)>0){
+
+            //I am in corner case
+            Log.v("InsertWorthy: corner",hashKeyFile+"-+-"+myNode.myid);
+            if(hashKeyFile.compareTo(predCode)>0 || hashKeyFile.compareTo(myNode.myid)<=0){
+                Log.v("InsertWorthy: c1",hashKeyFile+"-+-"+myNode.myid);
+                return OWN_ZONE;        //Node is greater than pred and smaller than myID
+            }
+//            if(hashKeyFile.compareTo(myNode.predCode)<0 && hashKeyFile.compareTo(myNode.myid)<=0){
+//                Log.v("InsertWorthy: c2",hashKeyFile+"-+-"+myNode.myid);
+//                return OWN_ZONE;        //Node is smaller than pred and smaller than myID
+//            }
+            else{
+
+                return OTHER_ZONE;
+            }
+        }
+
+        else{
+
+            if(hashKeyFile.compareTo(predCode)>0 && hashKeyFile.compareTo(myNode.myid)<=0){
+                return OWN_ZONE;
+            }else {
+                return OTHER_ZONE;
+            }
+
+        }
     }
 
     /*
@@ -152,11 +248,228 @@ public class SimpleDhtProvider extends ContentProvider {
 
     @Override
     public Cursor query(Uri uri, String[] projection, String selection, String[] selectionArgs,
-            String sortOrder) {
+                        String sortOrder) {
+
+
+
         // TODO Auto-generated method stub
+        String[] colVal = new String[]{"key","value"};
+        MatrixCursor tbl = new MatrixCursor(colVal);
+        int decision;
+        Log.i("SELECTION",selection);
+        try {
+            if(selection.equals("*")){
+                queryAllEval();
+            }else if(selection.equals("@")){
+                tbl = getAll(tbl);
+            }else{
+                decision = insertWorthy(selection);
+                switch (decision){
+                    case OTHER_ZONE:        return searchSingle(QUERY+"|"+myNode.myport+"*"+selection);
+                                             //Wait till I get
+
+                    case OWN_ZONE:  return queryDo(selection, tbl);
+
+                    default:    Log.v("Query","Cannot decide");
+                }
+            }
+
+
+
+
+            tbl = queryDo(selection,tbl);
+        } catch (IOException e) {
+            e.printStackTrace();
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        } catch (NoSuchAlgorithmException e) {
+            e.printStackTrace();
+        }
+        String msg = null;
+        return tbl;
+    }
+    //--Srini
+    private Cursor searchSingle(String msg) throws InterruptedException {
+        GOT_IT = false;
+        //sendToOtherSide(myNode.succPort,msg);
+
+        while(true){
+            if(GOT_IT){
+                break;
+            }
+            Thread.sleep(10,0);
+        }
+        GOT_IT = false;
+
+        String key = extractKeyVal(msg,KEY_MODE);
+        String val = extractKeyVal(msg,VAL_MODE);
+        String[] colVal = new String[]{"key","value"};
+        MatrixCursor tbl = new MatrixCursor(colVal);
+        String[] str = new String[2];
+        str[0] = key;
+        str[1] = val;
+        tbl.addRow(str);
+    }
+    //--Srini
+    //--Srinivasan
+    private String extractKeyVal(String msg, int val_mode) {
+        int start = 0, end = 0;
+        if(val_mode == KEY_MODE){
+            for(int i =0; i<msg.length();i++){
+                if(msg.charAt(i)=='<'){
+                    start = i+1;
+                }
+                if(msg.charAt(i)=='|'){
+                    end = i;
+                }
+
+            }
+            return msg.substring(start,end);
+        }
+        if(val_mode == VAL_MODE){
+            for(int i =0; i<msg.length();i++){
+                if(msg.charAt(i)=='|'){
+                    start = i+1;
+                }
+                if(msg.charAt(i)=='>'){
+                    end = i;
+                }
+
+            }
+            return msg.substring(start,end);
+        }
+        return  null;
+    }
+    //--Srini
+
+    //--Srinivasan
+    private void queryAllEval() throws IOException, InterruptedException {
+        GOT_IT = false;
+        stringMaster = keyValPair();
+        sendToOtherSide(myNode.succPort,PHANTOM+"%"+myNode.myport);
+        while(true){
+            if(GOT_IT){
+                break;
+            }
+            Thread.sleep(10,0);
+        }
+        GOT_IT=false;
+    }
+    //--Srinivasan
+
+
+    //--Srinivasan
+    private String keyValPair() throws IOException {
+        String[] lFiles = new String[100];
+        String kvpair =null;
+        lFiles = getContext().fileList();
+
+        FileInputStream fpInput = null;
+        String[] valueSet = new String[2];
+        for (String fName : lFiles) {
+            Log.i("FILES", fName);
+            fpInput = getContext().openFileInput(fName);
+            BufferedReader br = new BufferedReader(new InputStreamReader(fpInput));
+            valueSet[1] = br.readLine();
+            valueSet[0] = fName;
+            kvpair = "<" + valueSet[0] + "|" + valueSet[1] + ">";
+        }
+        return kvpair;
+    }
+    //--Srinivasan
+
+
+    private MatrixCursor storeIntoTable(String stringMaster,MatrixCursor tbl) {
+
+        //String format <key,val>
+        return tbl;
+    }
+
+    private Cursor addTbl(String resultAll, MatrixCursor tbl) {
+        String key = getKeyValue (resultAll,KEY_MODE);
+        String val = getKeyValue (resultAll,VAL_MODE);
+
+        String[] str = new String[2];
+        str[0] = key;
+        str[1] = val;
+
+        tbl.addRow(str);
+        return tbl;
+    }
+
+    private String getKeyValue(String result, int MODE){
+        if(MODE == KEY_MODE){
+            for(int i =0; i<result.length();i++){
+                if(result.charAt(i)==':'){
+                    return result.substring(0,i);
+                }
+            }
+        }
+        if(MODE == VAL_MODE){
+            for(int i =0; i<result.length();i++){
+                if(result.charAt(i)==':'){
+                    return result.substring(i+1);
+                }
+            }
+        }
         return null;
     }
 
+    private MatrixCursor getAll(MatrixCursor tbl) throws IOException {
+        String[] lFiles = new String[100];
+
+        lFiles=getContext().fileList();
+
+        FileInputStream fpInput = null;
+        String[] valueSet = new String[2];
+        for(String fName: lFiles){
+            Log.i("FILES",fName);
+            fpInput = getContext().openFileInput(fName);
+            BufferedReader br = new BufferedReader(new InputStreamReader(fpInput));
+            valueSet[1] = br.readLine();
+            valueSet[0] = fName;
+            tbl.addRow(valueSet);
+            Log.i("ALL",":"+fName +" : "+ valueSet[1]);
+        }
+
+        return tbl;
+    }
+
+/*
+
+    private String seekQuery(String selection, int MODE) throws InterruptedException {
+        String output,msg=null;
+        stringMaster = null;
+
+            msg = QUERY+"+"+myNode.myport+"$"+selection;
+
+        sendToOtherSide(myNode.succPort,msg);
+        while(true){
+
+            if(GOT_IT)
+                break;
+        }
+        GOT_IT = false;
+        return stringMaster;
+    }
+*/
+
+
+
+    //--Srinivasan
+    private MatrixCursor queryDo(String selection, MatrixCursor tbl) throws IOException {
+
+        FileInputStream fpInput = null;
+        fpInput = getContext().openFileInput(selection);
+        BufferedReader br = new BufferedReader(new InputStreamReader(fpInput));
+        String value = br.readLine();
+        String[] str = new String[2];
+        str[0]=selection;
+        str[1] = value;
+        tbl.addRow(new String[]{selection,value});
+        return tbl;
+    }
+    //--Srinivasan
     @Override
     public int update(Uri uri, ContentValues values, String selection, String[] selectionArgs) {
         // TODO Auto-generated method stub
@@ -211,12 +524,27 @@ public class SimpleDhtProvider extends ContentProvider {
                         serveOK_JOIN(msg);
                     }
                     if(msg.toLowerCase().contains(UPDATE_PRE.toLowerCase())){
+                        Log.v("UDPATE SUCC: ",msg);
                         serveUpdatePre(msg);
                     }
                     if(msg.toLowerCase().contains(UPDATE_SUC.toLowerCase())){
+                        Log.v("UDPATE PRE: ",msg);
                         serveUpdateSuc(msg);
                     }
+                    if(msg.toLowerCase().contains(FORWARD.toLowerCase())){
+                        serveForward(msg);
+                    }
+                    if(msg.toLowerCase().contains(QUERY.toLowerCase())){
+                        serveQuery(msg);
+                    }
+                    if(msg.toLowerCase().contains(RESPONSE.toLowerCase())){
+                        serveResponse(msg);
 
+                    }
+                    if(msg.toLowerCase().contains(PHANTOM.toLowerCase())){
+                        servePhantom(msg);
+                    }
+                    Log.i("CONSENSUS","P-"+myNode.predPort+"("+myNode.myport+")"+"S-"+myNode.succPort);
                 }catch(SocketException s){
                     s.printStackTrace();
                 }catch(IOException e){
@@ -232,23 +560,146 @@ public class SimpleDhtProvider extends ContentProvider {
         }
     }
 
+    private void servePhantom(String msg) {
+
+    }
+
+
+    private void serveResponse(String msg) {
+        for(int i = 0; i < msg.length();i++){
+            if(msg.charAt(i)=='$'){
+                stringMaster = msg.substring(i+1);
+            }
+        }
+        GOT_IT = true;
+    }
+
+    private String resolveKeyVal(String msg, int MODE) {
+        if(MODE == KEY_MODE){
+            for(int i =0; i<msg.length();i++){
+                if(msg.charAt(i)==':'){
+                    return msg.substring(0,i);
+                }
+            }
+        }
+        if(MODE == VAL_MODE){
+            for(int i =0; i<msg.length();i++){
+                if(msg.charAt(i)==':'){
+                    return msg.substring(i+1);
+                }
+            }
+        }
+        return null;
+    }
+    //--Srinivasan
+    private void serveQuery(String msg) throws NoSuchAlgorithmException, IOException {
+
+        String senderPort = extractKeyPort(msg,QUERY_PORT);
+        String keyVal = extractKeyPort(msg,QUERY_KEY);
+        String hashKey = genHash(keyVal);
+
+        int desc = insertWorthy(hashKey);
+
+        switch(desc){
+            case OWN_ZONE:  sendToOtherSide(senderPort,RESPONSE+"$"+queryThis(keyVal));
+                            break;
+            case OTHER_ZONE:sendToOtherSide(myNode.succPort,msg);
+                            break;
+            default: Log.e("serveQuery","NONE found suitable");
+        }
+
+    }
+    //--Srinivasan
+    private String queryThis(String keyVal) throws IOException {
+        String strv;
+        FileInputStream fpInput = null;
+        fpInput = getContext().openFileInput(keyVal);
+        BufferedReader br = new BufferedReader(new InputStreamReader(fpInput));
+        String value = br.readLine();
+        String[] str = new String[2];
+        str[0]=keyVal;
+        str[1] = value;
+        strv = "<"+str[0]+"|"+str[1]+">";
+        return strv;
+    }
+    //--Srinivasan
+    //--Srinivasan
+
+    //--Srinivasan
+    private String extractKeyPort(String msg,int MODE) {
+        int start = 0, end = 0;
+        if (MODE == QUERY_PORT) {
+            for (int i = 0; i < msg.length(); i++) {
+                if (msg.charAt(i) == '|') {
+                    start = i + 1;
+                }
+                if (msg.charAt(i) == '*') {
+                    end = i;
+                    break;
+                }
+            }
+            return msg.substring(start, end);
+        }
+        if (MODE == QUERY_KEY) {
+            for (int i = 0; i < msg.length(); i++) {
+                if (msg.charAt(i) == '*') {
+                    return msg.substring(i + 1);
+                }
+            }
+
+
+        }
+        return null;
+    }
+    //--Srinivasan
+
+    private void getInMe(String senderPort,String msg) throws IOException {
+        String strVal=null;
+        FileInputStream fpInput = null;
+        if(msg.charAt(5)=='+'){ //Single entry
+            String keyVal = extractKeyPort(msg,QUERY_KEY);
+            fpInput = getContext().openFileInput(keyVal);
+            BufferedReader br = new BufferedReader(new InputStreamReader(fpInput));
+            String value = br.readLine();
+
+            strVal = RESPONSE+"#"+keyVal+">"+value;
+            sendToOtherSide(senderPort,strVal);
+        }
+    }
+
+    private void serveForward(String msg) throws NoSuchAlgorithmException, IOException {
+        String keyFile = extractFVName(msg, FORWARD_FILE);
+        String valFile = extractFVName(msg,FORWARD_VAL);
+
+        int desc = insertWorthy(keyFile);
+        Log.v("ServeFor: pair",keyFile+"!"+valFile);
+
+        switch (desc){
+            case OWN_ZONE:  createContent(keyFile,valFile);
+                break;
+            case OTHER_ZONE: forwardToSucc(keyFile,valFile);
+                break;
+            default:    Log.e("serveForward","none identified");
+        }
+    }
+
     private void serveUpdateSuc(String msg) throws NoSuchAlgorithmException {
-        String sucPort = extractPortNumber(msg,UPDATE_NUM);
+        String sucPort = extractPortNumber(msg, UPDATE_NUM);
         String hashSPort = genHash(getRightID(sucPort));
 
-        myNode.succCode = hashSPort;
-        myNode.succPort = sucPort;
+        myNode.predCode = hashSPort;
+        myNode.predPort = sucPort;
 
-        Log.v("DHT servUpd",myNode.succPort);
+        Log.v("DHT servUpd PRE ","PRED: "+myNode.predPort+" SUCC: "+myNode.succPort);
     }
 
     private void serveUpdatePre(String msg) throws NoSuchAlgorithmException {
-        String prePort = extractPortNumber(msg,UPDATE_NUM);
+        String prePort = extractPortNumber(msg, UPDATE_NUM);
         String hashPPort = genHash(getRightID(prePort));
 
-        myNode.predCode = hashPPort;
-        myNode.predPort = prePort;
-        Log.v("DHT servUpd",myNode.predPort);
+        myNode.succCode = hashPPort;
+        myNode.succPort = prePort;
+        Log.v("DHT servUpd SUC", "PRED: " + myNode.predPort + " SUCC: " + myNode.succPort);
     }
 
     private String getRightID (String sub){
@@ -292,7 +743,7 @@ public class SimpleDhtProvider extends ContentProvider {
                             //It is in the middle
                             NodeHashList n1 = listOfHash.get(listOfHash.indexOf(i)-1);
                             NodeHashList n2 = listOfHash.get(listOfHash.indexOf(i)+1);
-
+                            sendMessage = null;
                             sendMessage = OK_JOIN+"*"+n1.portNum+"^"+n2.portNum;
                             Log.v("DHT 1st MID",sendMessage);
                             sendToOtherSide(portOfJoin,sendMessage);
@@ -301,49 +752,66 @@ public class SimpleDhtProvider extends ContentProvider {
 
                             sendMessage = UPDATE_PRE+"*"+nhl.portNum;
                             Log.v("DHT 2nd MID",sendMessage);
-                            sendToOtherSide(n2.portNum,sendMessage);
+                            sendToOtherSide(n1.portNum,sendMessage);
 
                             sendMessage = null;
 
                             sendMessage = UPDATE_SUC+"^"+nhl.portNum;
                             Log.v("DHT 3rd MID",sendMessage);
-                            sendToOtherSide(n1.portNum,nhl.portNum);
+                            sendToOtherSide(n2.portNum,nhl.portNum);
 
+                            /*myNode.predPort = n1.portNum;
+                            myNode.predCode = n1.hashCode;
+
+                            myNode.succPort = n2.portNum;
+                            myNode.succCode = n2.hashCode;*/
                         }else if(listOfHash.indexOf(i)==0){
                             NodeHashList n1 = listOfHash.get(listOfHash.size()-1);
                             NodeHashList n2 = listOfHash.get(listOfHash.indexOf(i)+1);
-
+                            sendMessage = null;
                             sendMessage = OK_JOIN+"*"+n1.portNum+"^"+n2.portNum;
                             sendToOtherSide(portOfJoin,sendMessage);
                             Log.v("DHT 1st TOP",sendMessage);
                             sendMessage = null;
 
                             sendMessage = UPDATE_PRE+"*"+nhl.portNum;
-                            sendToOtherSide(n2.portNum,sendMessage);
+                            sendToOtherSide(n1.portNum,sendMessage);
                             Log.v("DHT 2nd TOP ",sendMessage);
                             sendMessage = null;
 
                             sendMessage = UPDATE_SUC+"^"+nhl.portNum;
-                            sendToOtherSide(n1.portNum,nhl.portNum);
+                            sendToOtherSide(n2.portNum,sendMessage);
                             Log.v("DHT 3rd TOP",sendMessage);
+
+                            /*myNode.predPort = n1.portNum;
+                            myNode.predCode = n1.hashCode;
+
+                            myNode.succPort = n2.portNum;
+                            myNode.succCode = n2.hashCode;*/
                         }else if(listOfHash.indexOf(i) == listOfHash.size()-1){
                             NodeHashList n1 = listOfHash.get(listOfHash.indexOf(i)-1);
                             NodeHashList n2 = listOfHash.get(0);
-
+                            sendMessage = null;
 
                             sendMessage = OK_JOIN+"*"+n1.portNum+"^"+n2.portNum;
                             sendToOtherSide(portOfJoin,sendMessage);
-                            Log.v("DHT 1st BOT",sendMessage);
+                            Log.v("DHT 1st BOT",sendMessage+" to "+portOfJoin);
                             sendMessage = null;
 
                             sendMessage = UPDATE_PRE+"*"+nhl.portNum;
-                            sendToOtherSide(n2.portNum,sendMessage);
-                            Log.v("DHT 2nd BOT",sendMessage);
+                            sendToOtherSide(n1.portNum,sendMessage);
+                            Log.v("DHT 2nd BOT",sendMessage+" to "+n1.portNum);
                             sendMessage = null;
 
                             sendMessage = UPDATE_SUC+"^"+nhl.portNum;
-                            sendToOtherSide(n1.portNum,nhl.portNum);
-                            Log.v("DHT 3rd BOT",sendMessage);
+                            sendToOtherSide(n2.portNum,sendMessage);
+                            Log.v("DHT 3rd BOT",sendMessage+" to "+n2.portNum);
+
+                           /* myNode.predPort = n1.portNum;
+                            myNode.predCode = n1.hashCode;
+
+                            myNode.succPort = n2.portNum;
+                            myNode.succCode = n2.hashCode;*/
                         }
                         break;
                     }
@@ -362,53 +830,6 @@ public class SimpleDhtProvider extends ContentProvider {
 
         }
     }
-
-    /*
-    * Method: serveForwardConc
-    * Arguments: String msg
-    * Return type: void
-    * The FORWARD Conclusion message from the predecessor
-    * will take final actions to seal the node within
-    * ---------------------------------
-    * @author: srajappa
-    * Date: 2 April, 2015
-    *//*
-    private void serveForwardConc(String msg) {
-
-    }*/
-
-    /*
-    * Method: serveForward
-    * Arguments: String msg
-    * Return type: void
-    * The FORWARD message from the predecessor
-    * will perform inspections and take appropriate actions
-    * ---------------------------------
-    * @author: srajappa
-    * Date: 2 April, 2015
-    *//*
-    private void serveForward(String msg) throws NoSuchAlgorithmException {
-        serveJoin(msg);
-    }*/
-
-    /*
-    * Method: serveUpdate
-    * Arguments: String msg
-    * Return type: void
-    * The UPDATE message from MASTER NODE
-    * will ask the predecessor to be changed.
-    * ---------------------------------
-    * @author: srajappa
-    * Date: 2 April, 2015
-    *//*
-    private void serveUpdate(String msg) throws NoSuchAlgorithmException {
-        String updatePort = extractPortNumber(msg,UPDATE_NUM);  //The predecessor is here
-
-        String hashUpdatePort = genHash(updatePort);
-
-        myNode.predCode = hashUpdatePort;
-        myNode.predPort = updatePort;
-    }*/
 
     /*
     * Method: serveOK_JOIN
@@ -433,82 +854,9 @@ public class SimpleDhtProvider extends ContentProvider {
         myNode.succCode = hashSuccPort;
         myNode.predCode = hashPredPort;
 
-        Log.v("DHT servOK",myNode.predPort+"%"+myNode.succPort);
+        Log.v("JOINED ","PRED: "+myNode.predPort+"%"+" SUCC: "+myNode.succPort);
     }
 
-    /*
-     * Method: serveJoin
-     * Arguments: String msg
-     * Return type: void
-     * Incoming Join requests will be served by
-     * probing the HashCode of the sender and
-     * providing that with additional details of
-     * successor and predecessor.
-     * ---------------------------------
-     * @author: srajappa
-     * Date: 2 April, 2015
-     */
-    /*
-    private void serveJoin(String msg) throws NoSuchAlgorithmException {
-        String sendMessage= null;
-        String codeOfPort = null;
-        String portOfJoin = extractPortNumber(msg,JOIN_NUM);
-
-
-        //Detect if the Node is the first in the CHAIN :
-        //1. IF YES change SUCC and PRED values, send OK_JOIN messages to the new node
-        //2. IF NO perform
-        //  a. Inspection of the Sender and
-        //  b. Send appropriate OK_JOIN / CHANGE + UPDATE messages
-
-        //----1.  -----
-        if(myNode.predCode == null && myNode.succCode == null) {
-
-            codeOfPort = genHash(msg);
-            myNode.succCode = myNode.predCode = codeOfPort;
-            myNode.succPort = myNode.predPort = portOfJoin;
-
-            sendMessage = OK_JOIN+"*"+myNode.myport+"^"+myNode.myport;
-            sendToOtherSide(portOfJoin,sendMessage);            //Sending the Predecessor PORT  & Sending the Successor Port
-
-            sendMessage = null;
-
-        }
-        //----2. PART A -----
-        //      Three Phases of Inspection
-        //      i. The HashCode of Joinee is greater than current HashCode and Less than Successor
-        //      ii. The HashCode of Joinee is greater than Successor
-
-        //----2. PART A SUB-PART i.-----
-        int joinNcurr = codeOfPort.compareTo(myNode.myid);
-        int joinNsucc = codeOfPort.compareTo(myNode.succCode);
-        if(joinNcurr>0){
-            if(joinNsucc <= 0){
-                //Free to JOIN
-                sendMessage = OK_JOIN+"*"+myNode.myport+"^"+myNode.succPort;;
-                sendToOtherSide(portOfJoin,sendMessage);
-
-                sendMessage = null;
-
-                //Send the UPDATE statement the concerned
-                //------2. PART B------
-
-                sendMessage = UPDATE+"*"+portOfJoin;
-                sendToOtherSide(myNode.succPort,sendMessage);
-
-                //change the successor port values
-                myNode.succPort = portOfJoin;
-
-            }else if(joinNsucc > 0){
-                //Forward a REQUEST message to the successive nodes for the node cannot be fit here
-                //-------2. PART A SUB-PART ii.------
-                sendMessage = FORWARD+"|"+portOfJoin+"#"+myNode.myport;
-                sendToOtherSide(myNode.succPort,sendMessage);
-            }
-        }
-
-    }
-*/
     /*
      * Method: extractPortNumber
      * Arguments: String msg, int MODE
@@ -533,10 +881,10 @@ public class SimpleDhtProvider extends ContentProvider {
         if(MODE == OK_JOIN_PRED){
             for(i =0; i<msg.length() ; i++){
                 if(msg.charAt(i)=='*'){
-                       start = i;     //Returns the PORT for OK_JOIN (pred) messages
+                    start = i;     //Returns the PORT for OK_JOIN (pred) messages
                 }
                 if(msg.charAt(i)=='^'){
-                       end = i;
+                    end = i;
                 }
 
             }
@@ -567,80 +915,30 @@ public class SimpleDhtProvider extends ContentProvider {
         }
         return null;
     }
-
-    /*
-     * calculates the best values of successor and predecessor.
-     *
-     *//*
-    private void performCalculation(String senderPort,String second,int mode_msg) throws NoSuchAlgorithmException {
-        if(mode_msg == 0 ) {
-            String uqHashPort = genHash(senderPort);
-            String sHashPort = genHash(myNode.succ);
-            String pHashPort = genHash(myNode.pred);
-
-
-            if(myNode.succ == null && myNode.pred == null) {     //Checks the node if it is vacant
-                myNode.succ = uqHashPort;
-                myNode.pred = uqHashPort;
-                String msg = "OKJOIN|" + "*" + myNode.myport + "^" + myNode.myport;//sending information to the other that request is granted
-                Log.v("DHT performCalculation", "Sending pred and succ same " + myNode.myport);
-                sendToOtherSide(senderPort, msg);
-            }
-            if(myNode.succ.compareTo(uqHashPort)<0){           //Node info will be sent to successor
-                String msg = "CHECK|"+myNode.myport+"*"+uqHashPort;
-                sendToOtherSide(senderPort,msg);
-            }
-            if(myNode.myport.compareTo(uqHashPort)<0){
-                if(myNode.succ.compareTo(uqHashPort)>0){
-                    //This is the intermediary node
-                    String msg = "OKJOIN|"+"*"+myNode.myid+"^"+myNode.succ;
-                    String msg2 = "UPDATE|^"+myNode.succ;
-                    myNode.succ = uqHashPort;
-                    sendToOtherSide(senderPort,msg);
-                    sendToOtherSide(myNode.succPort,msg2);
+    private String extractFVName(String msg, int MODE) {
+        int start = 0, end = 0;
+        if (MODE == FORWARD_FILE) {
+            // ~ for file name
+            for (int i = 0; i < msg.length(); i++) {
+                if (msg.charAt(i) == '~') {
+                    start = i + 1;
+                }
+                if (msg.charAt(i) == '!') {
+                    end = i;
                 }
             }
-
-        }else if (mode_msg ==1){                //This is a good way to get things done for OK
-
-            myNode.pred = genHash(senderPort);
-            myNode.succ = genHash(second);
+            return msg.substring(start, end);
         }
-    }*/
-/*
-    private void performLookup(String uqHash) {
-        //if()
+        if (MODE == FORWARD_VAL) {
+            // ! for value name
+            for (int i = 0; i < msg.length(); i++) {
+                if (msg.charAt(i) == '!') {
+                    return msg.substring(i + 1);
+                }
+            }
+        }
+        return null;
     }
-
-    public String uqIDFinder(String msg,int mode){
-        int start=0, end=0;
-        if(mode == 0){
-            for(int i = 0 ; i < msg.length(); i++){
-
-                    if (msg.charAt(i) == '|') {
-                        return msg.substring(i);
-                    }
-                }
-        }else if(mode==1){
-                for(int i = 0 ; i < msg.length(); i++){
-                    if(msg.charAt(i)=='*'){
-                        start = i;
-                    }
-                    if(msg.charAt(i)=='^'){
-                        end = i;
-                    }
-                }
-                return msg.substring(start,end-1);
-        }else if(mode == 2){
-            for (int i = 0; i<msg.length(); i++){
-                if(msg.charAt(i)=='^'){
-                    return msg.substring(i);
-                }
-            }
-        }
-        return  null;
-    }*/
-
 
     private class ClientTask extends AsyncTask<String, Void, Void> {
 
